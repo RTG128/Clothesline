@@ -490,6 +490,8 @@ const ACC = {single:'#ffd36b',couple:'#ffd36b',gifts:'#ffd36b',design:'#ffd36b'}
 /* Firebase Realtime Database URL (order tracking ke liye). Setup: FIREBASE-SETUP.txt dekhein. Khali chhodne par tracking sirf usi device pe chalegi.
    Example: "https://clothesline-india-default-rtdb.firebaseio.com" */
 const FIREBASE_DB_URL = "https://clothesline-india-default-rtdb.asia-southeast1.firebasedatabase.app";
+const FB_API_KEY = "AIzaSyAzoZ6YSFcrRW7M_Tp6Ht6DgQZboIxcj2g";
+const FB_ADMIN_EMAIL = "mahto12082005rahul@gmail.com";
 const STEPS=[['New','Order Placed','📝'],['Confirmed','Confirmed','✅'],['Packed','Packed','📦'],['Shipped','Shipped','🚚'],['Out for Delivery','Out for Delivery','🛵'],['Delivered','Delivered','🎉']];
 const MSG={New:'We have received your order. It will be confirmed soon.',Confirmed:'Your order is confirmed ✅',Packed:'Your order has been packed 📦',Shipped:'Your order has been shipped 🚚',"Out for Delivery":'Out for Delivery! 🛵 Your order will arrive today.',Delivered:'Delivered! Thank you for choosing Clothesline India 🎉',Cancelled:'This order has been cancelled.'};
 const SECNAME = {single:'Single',couple:'Couple',gifts:'Gifts',design:'Design Your Own'};
@@ -996,14 +998,17 @@ function admSett(){
   <hr style="margin:18px 0;border:none;border-top:1px solid #eee">
   <h3 style="font-family:Outfit;font-size:18px;margin-bottom:6px">Order Tracking (Cloud)</h3>
   <p style="font-size:13px;color:#666;margin-bottom:8px">Status: <b>${FIREBASE_DB_URL?'Firebase URL set ✓':'Firebase URL is not set (enter FIREBASE_DB_URL in index.html)'}</b></p>
-  <div class="fld"><label>Firebase Database Secret (saved on this device only)</label><input type="password" id="fbs" value="${esc(load('cl_fb_secret',''))}"></div>
-  <button class="btn" id="sfb">Save &amp; Sync</button>
+  <p style="font-size:13px;color:#666;margin-bottom:8px">Admin login: <b>${FB_ADMIN_EMAIL}</b> · ${load('cl_fb_rt','')?'<b style="color:#16a34a">Logged in ✓</b>':'Not logged in'}</p>
+  <div class="fld"><label>Firebase admin password (not saved on this device)</label><input type="password" id="fbs" autocomplete="off"></div>
+  <button class="btn" id="sfb">Login &amp; Sync</button> <button class="mini" id="sfbo" type="button">Log out</button>
   <hr style="margin:18px 0;border:none;border-top:1px solid #eee">
   <button class="mini r" id="rstP">Reset products (back to default)</button>
   <p style="font-size:12px;color:#777;margin-top:12px">Note: Admin data is saved in your browser. All customer orders always arrive on your WhatsApp (+91 70478 33473).</p></div>`;
 }
 $('#tab-sett').addEventListener('click',e=>{
-  if(e.target.id==='sfb'){save('cl_fb_secret',$('#fbs').value.trim());toast('Saved ✓');syncAdmin()}
+  if(e.target.id==='sfbo'){save('cl_fb_rt','');fbTok=null;toast('Logged out');admSett();return}
+  if(e.target.id==='sfb'){const pw=$('#fbs').value;if(!pw)return toast('Enter the Firebase admin password');
+    fbLogin(FB_ADMIN_EMAIL,pw).then(()=>{$('#fbs').value='';toast('Login successful ✓');admSett();syncAdmin()}).catch(()=>toast('Login failed – check the email/password and that Email/Password sign-in is enabled'))}
   if(e.target.id==='spw'){const v=$('#npw').value;if(v.length<6)return toast('Minimum 6 characters');save('cl_admin_pw',v);toast('Password changed ✓')}
   if(e.target.id==='rstP'&&confirm('Reset all products to default?')){products=SEED;saveP();renderAll();admProds()}
 });
@@ -1021,6 +1026,17 @@ $$('.lgimg').forEach(i=>i.src=LOGO);
 
 /* ============ CLOUD (Firebase REST) ============ */
 const arr=x=>Array.isArray(x)?x:(x?Object.values(x):[]);
+let fbTok=null,fbExp=0;
+async function fbLogin(email,pw){
+  const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+FB_API_KEY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pw,returnSecureToken:true})});
+  if(!r.ok)throw new Error('login');const d=await r.json();fbTok=d.idToken;fbExp=Date.now()+(+d.expiresIn)*1000;save('cl_fb_rt',d.refreshToken);
+}
+async function fbToken(){
+  if(fbTok&&Date.now()<fbExp-60000)return fbTok;
+  const rt=load('cl_fb_rt','');if(!rt)return null;
+  const r=await fetch('https://securetoken.googleapis.com/v1/token?key='+FB_API_KEY,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'grant_type=refresh_token&refresh_token='+encodeURIComponent(rt)});
+  if(!r.ok)throw new Error('auth');const d=await r.json();fbTok=d.id_token;fbExp=Date.now()+(+d.expires_in)*1000;if(d.refresh_token)save('cl_fb_rt',d.refresh_token);return fbTok;
+}
 async function fb(path,method='GET',body,auth){
   if(!FIREBASE_DB_URL) return null;
   const u=FIREBASE_DB_URL.replace(/\/$/,'')+'/'+path+'.json'+(auth?'?auth='+encodeURIComponent(auth):'');
@@ -1122,14 +1138,14 @@ $('#trkBtn').onclick=async()=>{
 /* ============ ADMIN: STATUS + SYNC ============ */
 async function setStatus(o,v){
   o.status=v;o.h=arr(o.h).concat({s:v,t:Date.now()});save('cl_orders',orders);admOrders();
-  const sec=load('cl_fb_secret','');
+  let sec=null;try{sec=await fbToken()}catch(e){}
   if(!FIREBASE_DB_URL){toast('Status updated (on this device only – Firebase is not connected)');return}
-  if(!sec){toast('Enter the Firebase secret in Settings');return}
+  if(!sec){toast('Please log in to Firebase in Settings first');return}
   try{await fb('track/'+o.id,'PUT',{status:v,h:o.h},sec);await fb('orders/'+o.id,'PATCH',{status:v,h:o.h},sec);toast('Status: '+v+' ✓ visible to the customer')}
-  catch(e){toast('Cloud update failed – check the URL/secret')}
+  catch(e){toast('Cloud update failed – log in again in Settings')}
 }
 async function syncAdmin(){
-  const sec=load('cl_fb_secret','');if(!FIREBASE_DB_URL||!sec)return;
+  let sec=null;try{sec=await fbToken()}catch(e){}if(!FIREBASE_DB_URL||!sec)return;
   try{
     const all=await fb('orders','GET',null,sec);if(!all)return;
     Object.values(all).forEach(c=>{
@@ -1138,7 +1154,7 @@ async function syncAdmin(){
       if(l){if(c.status&&c.h.length>=arr(l.h).length){l.status=c.status;l.h=c.h}}else orders.push(c);
     });
     orders.sort((a,b)=>new Date(b.date)-new Date(a.date));save('cl_orders',orders);admOrders();toast('Cloud orders sync ✓');
-  }catch(e){toast('Cloud sync failed – check the URL/secret')}
+  }catch(e){toast('Cloud sync failed – log in again in Settings')}
 }
 
 /* ============ INIT ============ */
